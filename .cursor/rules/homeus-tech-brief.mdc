@@ -1,0 +1,187 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+# src/main.py
+import asyncio
+import schedule
+import time
+import logging
+from pathlib import Path
+from datetime import datetime
+from typing import List
+
+from scraper.myhome_scraper import MyHomeScraper
+from storage.database import Database
+from storage.sheets_manager import SheetsManager
+from utils.logger import setup_logger
+from utils.config import load_config
+
+class HomeusManager:
+    def __init__(self, config_path: str):
+        self.config = load_config(config_path)
+        self.logger = setup_logger(self.config['logging'])
+        self.db = Database(self.config['database']['path'])
+        self.sheets = SheetsManager(self.config['google_sheets']) if self.config['google_sheets']['enabled'] else None
+        self.scrapers = self._init_scrapers()
+        
+    def _init_scrapers(self):
+        scrapers = {}
+        for site_name, site_config in self.config['websites'].items():
+            if site_name == 'myhome':
+                scrapers[site_name] = MyHomeScraper(site_config)
+        return scrapers
+    
+    def run_scraping_cycle(self):
+        """Main scraping cycle - runs every 5 minutes"""
+        self.logger.info("Starting scraping cycle")
+        session_id = self.db.start_scraping_session()
+        
+        try:
+            new_properties_count = 0
+            total_properties_count = 0
+            
+            for site_name, scraper in self.scrapers.items():
+                site_config = self.config['websites'][site_name]
+                
+                for search_config in site_config['search_urls']:
+                    self.logger.info(f"Scraping: {search_config['name']}")
+                    
+                    # Scrape search results
+                    properties = scraper.scrape_listings(search_config['url'])
+                    total_properties_count += len(properties)
+                    
+                    # Process each property
+                    for prop in properties:
+                        if self.db.is_new_property(prop.property_id):
+                            # Try to get detailed information
+                            if prop.detail_url:
+                                try:
+                                    detailed_prop = scraper.scrape_property_details(prop.detail_url)
+                                    if detailed_prop:
+                                        prop = detailed_prop
+                                except Exception as e:
+                                    self.logger.warning(f"Failed to get details for {prop.property_id}: {e}")
+                            
+                            # Save to database
+                            self.db.save_property(prop)
+                            
+                            # Add to Google Sheets
+                            if self.sheets:
+                                self.sheets.add_property(prop)
+                            
+                            new_properties_count += 1
+                            self.logger.info(f"New property added: {prop.title} - {prop.price} {prop.currency}")
+                        else:
+                            # Update last_seen timestamp
+                            self.db.update_property_last_seen(prop.property_id)
+            
+            self.db.finish_scraping_session(session_id, total_properties_count, new_properties_count)
+            self.logger.info(f"Scraping cycle completed. Found {total_properties_count} properties, {new_properties_count} new")
+            
+        except Exception as e:
+            self.db.finish_scraping_session(session_id, 0, 0, str(e))
+            self.logger.error(f"Scraping cycle failed: {e}")
+    
+    def start_monitoring(self):
+        """Start the monitoring loop"""
+        self.logger.info("Starting Homeus monitoring...")
+        
+        # Schedule scraping every 5 minutes
+        schedule.every(self.config['scraping']['interval_minutes']).minutes.do(self.run_scraping_cycle)
+        
+        # Run initial scraping
+        self.run_scraping_cycle()
+        
+        # Keep running
+        while True:
+            schedule.run_pending()
+            time.sleep(30)  # Check every 30 seconds
+
+# src/scraper/myhome_scraper.py
+import requests
+from bs4 import BeautifulSoup
+from typing import List, Optional
+import re
+from datetime import datetime
+import hashlib
+import time
+
+from .base_scraper import BaseScraper
+from ..models.property import Property
+
+class MyHomeScraper(BaseScraper):
+    def __init__(self, config: dict):
+        super().__init__(config['base_url'])
+        self.config = config
+        
+        # Headers to mimic a real browser
+        self.session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'ka-GE,ka;q=0.9,en;q=0.8',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+        })
+    
+    def scrape_listings(self, search_url: str, max_pages: int = 5) -> List[Property]:
+        """Scrape property listings from search results"""
+        properties = []
+        page = 1
+        
+        while page <= max_pages:
+            page_url = f"{search_url}&page={page}" if page > 1 else search_url
+            
+            try:
+                response = self.session.get(page_url, timeout=30)
+                response.raise_for_status()
+                
+                soup = BeautifulSoup(response.content, 'html.parser')
+                page_properties = self._parse_listing_page(soup, search_url)
+                
+                if not page_properties:
+                    break  # No more properties, stop pagination
+                
+                properties.extend(page_properties)
+                page += 1
+                
+                # Be respectful with delays
+                time.sleep(2)
+                
+            except Exception as e:
+                logging.error(f"Error scraping page {page} of {search_url}: {e}")
+                break
+        
+        return properties
+    
+    def _parse_listing_page(self, soup: BeautifulSoup, search_url: str) -> List[Property]:
+        """Parse properties from a search results page"""
+        properties = []
+        
+        # Common selectors for myhome.ge (may need adjustment)
+        property_selectors = [
+            '.statement-card',  # Common card selector
+            '.property-item',   # Alternative selector
+            '.listing-item',    # Another common pattern
+            '[data-product-id]' # Data attribute based
+        ]
+        
+        property_cards = None
+        for selector in property_selectors:
+            property_cards = soup.select(selector)
+            if property_cards:
+                break
+        
+        if not property_cards:
+            # Fallback: look for any element with property-like structure
+            property_cards = soup.select('div[class*="statement"], div[class*="property"], div[class*="listing"]')
+        
+        for card in property_cards:
+            try:
+                prop = self._parse_property_card(card, search_url)
+                if prop:
+                    properties.append(prop)
+            except Exception as e:
+                logging.warning(f

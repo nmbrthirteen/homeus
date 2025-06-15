@@ -1,0 +1,219 @@
+import requests
+from bs4 import BeautifulSoup
+from typing import List, Optional
+import re
+from datetime import datetime
+import time
+import logging
+
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from scraper.base_scraper import BaseScraper
+from models.property import Property
+
+class MyHomeScraper(BaseScraper):
+    def __init__(self, config: dict):
+        super().__init__(config['base_url'])
+        self.config = config
+        
+    def scrape_listings(self, search_url: str, max_pages: int = 5) -> List[Property]:
+        properties = []
+        page = 1
+        
+        while page <= max_pages:
+            page_url = f"{search_url}&page={page}" if '&page=' not in search_url else search_url.replace('&page=1', f'&page={page}')
+            
+            try:
+                response = self.session.get(page_url, timeout=30)
+                response.raise_for_status()
+                
+                soup = BeautifulSoup(response.content, 'html.parser')
+                page_properties = self._parse_listing_page(soup, search_url)
+                
+                if not page_properties:
+                    break
+                
+                properties.extend(page_properties)
+                page += 1
+                time.sleep(2)
+                
+            except Exception as e:
+                logging.error(f"Error scraping MyHome page {page}: {e}")
+                break
+        
+        return properties
+    
+    def _parse_listing_page(self, soup: BeautifulSoup, search_url: str) -> List[Property]:
+        properties = []
+        
+        property_cards = soup.select('.statement-card, .property-card, [data-product-id]')
+        
+        if not property_cards:
+            property_cards = soup.select('div[class*="statement"], div[class*="property"]')
+        
+        for card in property_cards:
+            try:
+                prop = self._parse_property_card(card, search_url)
+                if prop:
+                    properties.append(prop)
+            except Exception as e:
+                logging.warning(f"Error parsing MyHome property card: {e}")
+                continue
+        
+        return properties
+    
+    def _parse_property_card(self, card, search_url: str) -> Optional[Property]:
+        try:
+            title_elem = card.select_one('.statement-title, h3 a, .property-title, a[href*="/pr/"]')
+            if not title_elem:
+                return None
+            
+            title = self._clean_text(title_elem.get_text())
+            
+            link_elem = card.select_one('a[href*="/pr/"]') or title_elem
+            detail_url = None
+            if link_elem and link_elem.get('href'):
+                href = link_elem.get('href')
+                detail_url = href if href.startswith('http') else f"{self.base_url}{href}"
+            
+            property_id = self._extract_property_id(detail_url or title)
+            
+            price_elem = card.select_one('.statement-price, .price, [class*="price"]')
+            price = None
+            currency = "USD"
+            if price_elem:
+                price_text = price_elem.get_text()
+                price = self._extract_number(price_text)
+                if '$' in price_text or 'USD' in price_text:
+                    currency = "USD"
+                elif '₾' in price_text or 'GEL' in price_text:
+                    currency = "GEL"
+            
+            location_elem = card.select_one('.statement-address, .location, [class*="address"]')
+            location = self._clean_text(location_elem.get_text()) if location_elem else "Unknown"
+            
+            details_elem = card.select_one('.statement-details, .property-details, [class*="details"]')
+            rooms = None
+            size = None
+            if details_elem:
+                details_text = details_elem.get_text()
+                rooms = self._extract_rooms(details_text)
+                size = self._extract_size(details_text)
+            
+            image_elem = card.select_one('img')
+            images = []
+            if image_elem and image_elem.get('src'):
+                img_src = image_elem.get('src')
+                if not img_src.startswith('http'):
+                    img_src = f"{self.base_url}{img_src}"
+                images = [img_src]
+            
+            return Property(
+                property_id=property_id,
+                title=title,
+                price=price,
+                currency=currency,
+                location=location,
+                size=size,
+                rooms=rooms,
+                property_type="apartment",
+                source_url=search_url,
+                detail_url=detail_url,
+                images=images
+            )
+            
+        except Exception as e:
+            logging.error(f"Error parsing MyHome property: {e}")
+            return None
+    
+    def scrape_property_details(self, property_url: str) -> Optional[Property]:
+        try:
+            response = self.session.get(property_url, timeout=30)
+            response.raise_for_status()
+            
+            soup = BeautifulSoup(response.content, 'html.parser')
+            
+            title_elem = soup.select_one('h1, .property-title, .main-title')
+            title = self._clean_text(title_elem.get_text()) if title_elem else "Unknown"
+            
+            price_elem = soup.select_one('.price, [class*="price"]')
+            price = None
+            currency = "USD"
+            if price_elem:
+                price_text = price_elem.get_text()
+                price = self._extract_number(price_text)
+                if '$' in price_text or 'USD' in price_text:
+                    currency = "USD"
+                elif '₾' in price_text or 'GEL' in price_text:
+                    currency = "GEL"
+            
+            description_elem = soup.select_one('.property-description, .description, [class*="description"]')
+            description = self._clean_text(description_elem.get_text()) if description_elem else None
+            
+            images = []
+            img_elements = soup.select('.property-gallery img, .image-gallery img, .gallery img')
+            for img in img_elements:
+                if img.get('src'):
+                    img_src = img.get('src')
+                    if not img_src.startswith('http'):
+                        img_src = f"{self.base_url}{img_src}"
+                    images.append(img_src)
+            
+            property_id = self._extract_property_id(property_url)
+            
+            return Property(
+                property_id=property_id,
+                title=title,
+                price=price,
+                currency=currency,
+                location="Tbilisi",
+                property_type="apartment",
+                description=description,
+                source_url=property_url,
+                detail_url=property_url,
+                images=images
+            )
+            
+        except Exception as e:
+            logging.error(f"Error scraping MyHome property details: {e}")
+            return None
+    
+    def _extract_property_id(self, url_or_text: str) -> str:
+        if not url_or_text:
+            return f"myhome_{hash(url_or_text) % 1000000}"
+        
+        match = re.search(r'/pr/(\d+)/', url_or_text)
+        if match:
+            return f"myhome_{match.group(1)}"
+        
+        return f"myhome_{hash(url_or_text) % 1000000}"
+    
+    def _extract_rooms(self, text: str) -> Optional[int]:
+        if not text:
+            return None
+        match = re.search(r'(\d+)\s*(?:ოთახი|otaxi|room)', text.lower())
+        return int(match.group(1)) if match else None
+    
+    def _extract_size(self, text: str) -> Optional[float]:
+        if not text:
+            return None
+        
+        patterns = [
+            r'ფართი\s*(\d+(?:\.\d+)?)\s*m²',
+            r'ფართი\s*(\d+(?:\.\d+)?)\s*მ²',
+            r'(\d{2,3}(?:\.\d+)?)\s*m²',
+            r'(\d{2,3}(?:\.\d+)?)\s*მ²',
+            r'(\d+(?:\.\d+)?)\s*კვ\.?\s*მ',
+            r'(\d+(?:\.\d+)?)\s*sqm',
+            r'(\d+(?:\.\d+)?)\s*sq\.?\s*m',
+            r'(\d+(?:\.\d+)?)\s*კვადრატული\s*მეტრი'
+        ]
+        
+        for pattern in patterns:
+            matches = re.findall(pattern, text.lower())
+            if matches:
+                sizes = [float(m) for m in matches if float(m) > 10]
+                if sizes:
+                    return max(sizes)
+        return None 

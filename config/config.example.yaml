@@ -1,0 +1,73 @@
+scraping:
+  interval_minutes: 5
+  max_pages: 10
+  delay_between_requests: 2
+  timeout: 30
+  user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+
+websites:
+  ss:
+    name: "SS.ge"
+    base_url: "https://home.ss.ge"
+    enabled: true
+    search_urls:
+      - url: "https://home.ss.ge/ka/udzravi-qoneba/iyideba-bina?price_type=1&currency_id=2&price_to=90000&page=1"
+        name: "SS.GE Apartments Under 90k USD"
+      - url: "https://home.ss.ge/ka/udzravi-qoneba/iyideba-saxli?price_type=1&currency_id=2&price_to=150000&page=1"
+        name: "SS.GE Houses Under 150k USD"
+
+  myhome:
+    name: "MyHome.ge"
+    base_url: "https://www.myhome.ge"
+    enabled: true
+    search_urls:
+      - url: "https://www.myhome.ge/s/iyideba-bina-Tbilisshi/?deal_types=1&real_estate_types=1&cities=1&currency_id=2&price_to=90000&page=1"
+        name: "MYHOME Apartments Under 90k USD"
+      - url: "https://www.myhome.ge/s/iyideba-saxli-Tbilisshi/?deal_types=1&real_estate_types=2&cities=1&currency_id=2&price_to=150000&page=1"
+        name: "MYHOME Houses Under 150k USD"
+
+database:
+  path: "data/homeus.db"
+  backup_enabled: true
+  backup_interval_hours: 24
+
+google_sheets:
+  enabled: false
+  sheet_id: "YOUR_GOOGLE_SHEET_ID_HERE"
+  worksheet_name: "Sheet1"
+  service_account_file: "config/google_credentials.json"
+
+notifications:
+  enabled: false
+  telegram:
+    bot_token: "YOUR_TELEGRAM_BOT_TOKEN"
+    chat_id: "YOUR_TELEGRAM_CHAT_ID"
+  email:
+    enabled: false
+    smtp_server: "smtp.gmail.com"
+    smtp_port: 587
+    username: "your-email@gmail.com"
+    password: "your-app-password"
+    to_email: "recipient@gmail.com"
+
+logging:
+  level: "INFO"
+  file: "data/logs/homeus.log"
+  max_size_mb: 10
+  backup_count: 5
+  console_output: true
+
+filters:
+  min_price: 10000
+  max_price: 500000
+  min_size: 20
+  max_size: 500
+  excluded_keywords:
+    - "commercial"
+    - "კომერციული"
+  required_keywords: []
+
+performance:
+  max_concurrent_requests: 3
+  request_retry_count: 3
+  request_retry_delay: 5

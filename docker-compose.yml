@@ -1,0 +1,14 @@
+version: "3.8"
+
+services:
+  homeus:
+    build: .
+    container_name: homeus-scraper
+    restart: unless-stopped
+    volumes:
+      - ./data:/app/data
+      - ./config:/app/config
+      - ./logs:/app/logs
+    environment:
+      - PYTHONUNBUFFERED=1
+    command: python src/main.py --config config/config.yaml

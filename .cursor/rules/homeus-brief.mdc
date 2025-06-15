@@ -1,0 +1,316 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+# Homeus - Production Architecture
+
+## 🏗️ System Architecture
+
+```
+┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
+│   Config File   │    │   Web Scraper    │    │  Google Sheets  │
+│   (URLs + Prefs)│───▶│     Engine       │───▶│   Integration   │
+└─────────────────┘    └──────────────────┘    └─────────────────┘
+                              │                          │
+                              ▼                          ▼
+                       ┌──────────────┐         ┌─────────────────┐
+                       │   SQLite DB  │         │   Notifications │
+                       │ (Seen Props) │         │   (Optional)    │
+                       └──────────────┘         └─────────────────┘
+                              │
+                              ▼
+                       ┌──────────────┐
+                       │   Scheduler  │
+                       │ (5min cron)  │
+                       └──────────────┘
+```
+
+## 📁 Project Structure
+
+```
+homeus/
+├── config/
+│   ├── config.yaml           # URLs and preferences
+│   └── google_credentials.json (optional)
+├── src/
+│   ├── scraper/
+│   │   ├── __init__.py
+│   │   ├── base_scraper.py   # Abstract scraper class
+│   │   ├── myhome_scraper.py # MyHome.ge specific scraper
+│   │   └── property_parser.py # Property data parser
+│   ├── storage/
+│   │   ├── __init__.py
+│   │   ├── database.py       # SQLite operations
+│   │   └── sheets_manager.py # Google Sheets integration
+│   ├── utils/
+│   │   ├── __init__.py
+│   │   ├── logger.py         # Logging setup
+│   │   └── helpers.py        # Utility functions
+│   └── main.py              # Entry point
+├── data/
+│   ├── homeus.db            # SQLite database
+│   └── logs/                # Log files
+├── requirements.txt
+├── docker-compose.yml       # For easy deployment
+└── README.md
+```
+
+## 🛠️ Tech Stack (Optimized)
+
+### Core Components
+- **Python 3.9+** (Main language)
+- **Requests + BeautifulSoup4** (Web scraping)
+- **SQLite** (Local database for tracking)
+- **gspread** (Google Sheets API)
+- **schedule** (Simple cron-like scheduling)
+- **pydantic** (Data validation)
+- **PyYAML** (Configuration management)
+
+### Why This Stack?
+- **No authentication complexity** - Direct API keys
+- **Lightweight** - Runs on any VPS/local machine
+- **Reliable** - Proven libraries for scraping
+- **Maintainable** - Simple, clean architecture
+
+## 🎯 Core Classes & Flow
+
+### 1. Property Data Model
+```python
+from pydantic import BaseModel
+from typing import Optional, List
+from datetime import datetime
+
+class Property(BaseModel):
+    property_id: str
+    title: str
+    price: Optional[int]
+    currency: str
+    location: str
+    district: Optional[str]
+    size: Optional[float]  # square meters
+    rooms: Optional[int]
+    bedrooms: Optional[int]
+    floor: Optional[str]
+    total_floors: Optional[int]
+    property_type: str
+    description: Optional[str]
+    images: List[str]
+    source_url: str
+    detail_url: Optional[str]
+    listing_date: Optional[datetime]
+    scraped_at: datetime
+    is_new: bool = True
+```
+
+### 2. Scraper Architecture
+```python
+from abc import ABC, abstractmethod
+
+class BaseScraper(ABC):
+    def __init__(self, base_url: str, headers: dict):
+        self.base_url = base_url
+        self.session = requests.Session()
+        self.session.headers.update(headers)
+    
+    @abstractmethod
+    def scrape_listings(self, search_url: str) -> List[Property]:
+        pass
+    
+    @abstractmethod
+    def scrape_property_details(self, property_url: str) -> Property:
+        pass
+
+class MyHomeScraper(BaseScraper):
+    def scrape_listings(self, search_url: str) -> List[Property]:
+        # Implementation for listing page scraping
+        pass
+    
+    def scrape_property_details(self, property_url: str) -> Property:
+        # Implementation for detailed property scraping
+        pass
+```
+
+### 3. Data Flow Strategy
+
+**Two-Phase Scraping:**
+1. **Phase 1:** Scrape search results page (fast, basic data)
+2. **Phase 2:** For new properties, scrape detailed pages (slower, complete data)
+
+This approach balances speed and completeness.
+
+## 📊 Data Extraction Strategy
+
+### Search Page Extraction (Primary)
+```python
+# Target selectors for myhome.ge (need to be verified)
+SEARCH_SELECTORS = {
+    'property_cards': '.statement-card, .property-card',
+    'title': '.statement-title, h3 a',
+    'price': '.statement-price, .price',
+    'location': '.statement-address, .location',
+    'details': '.statement-details, .property-details',
+    'link': 'a[href*="/pr/"]',
+    'image': 'img.property-image, .statement-image img'
+}
+```
+
+### Detail Page Extraction (Secondary)
+```python
+DETAIL_SELECTORS = {
+    'full_description': '.property-description, #description',
+    'all_images': '.property-gallery img, .image-gallery img',
+    'specifications': '.property-specs, .specifications table',
+    'contact_info': '.contact-section',
+    'map_location': '.map-container, #map'
+}
+```
+
+## 🗄️ Database Schema
+
+```sql
+-- Properties table
+CREATE TABLE properties (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    property_id TEXT UNIQUE NOT NULL,
+    title TEXT NOT NULL,
+    price INTEGER,
+    currency TEXT DEFAULT 'USD',
+    location TEXT,
+    district TEXT,
+    size REAL,
+    rooms INTEGER,
+    bedrooms INTEGER,
+    floor TEXT,
+    total_floors INTEGER,
+    property_type TEXT,
+    description TEXT,
+    images TEXT, -- JSON array
+    source_url TEXT NOT NULL,
+    detail_url TEXT,
+    listing_date DATETIME,
+    scraped_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    last_seen DATETIME DEFAULT CURRENT_TIMESTAMP,
+    is_active BOOLEAN DEFAULT TRUE,
+    hash TEXT -- For duplicate detection
+);
+
+-- Scraping sessions log
+CREATE TABLE scraping_sessions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    completed_at DATETIME,
+    properties_found INTEGER DEFAULT 0,
+    new_properties INTEGER DEFAULT 0,
+    errors TEXT,
+    status TEXT DEFAULT 'running'
+);
+```
+
+## ⚙️ Configuration System
+
+```yaml
+# config/config.yaml
+scraping:
+  interval_minutes: 5
+  max_pages: 10
+  delay_between_requests: 2
+  timeout: 30
+
+websites:
+  myhome:
+    name: "MyHome.ge"
+    base_url: "https://www.myhome.ge"
+    search_urls:
+      - url: "https://www.myhome.ge/s/iyideba-bina-Tbilisshi/?deal_types=1&real_estate_types=1&cities=1&urbans=38,39,40,41,42,43,44,45,46,47,101,28,30,48,106,111,121,29&districts=4&currency_id=2&CardView=1&price_to=90000&page=1"
+        name: "Tbilisi Apartments Under 90k"
+      - url: "https://www.myhome.ge/s/iyideba-saxli-Tbilisshi/?deal_types=1&real_estate_types=2&cities=1"
+        name: "Tbilisi Houses"
+
+google_sheets:
+  enabled: true
+  sheet_id: "your-google-sheet-id"
+  worksheet_name: "Properties"
+  service_account_file: "config/google_credentials.json"
+
+notifications:
+  enabled: false
+  telegram:
+    bot_token: ""
+    chat_id: ""
+
+logging:
+  level: "INFO"
+  file: "data/logs/homeus.log"
+  max_size_mb: 10
+```
+
+## 🚀 Implementation Priority
+
+### Phase 1: Core Scraper (Week 1)
+1. Basic myhome.ge scraper
+2. SQLite database setup
+3. Property data models
+4. Configuration system
+
+### Phase 2: Google Sheets Integration (3-4 days)
+1. Sheets API integration
+2. Data formatting and updates
+3. New property highlighting
+
+### Phase 3: Scheduling & Production (2-3 days)
+1. Reliable scheduling system
+2. Error handling and recovery
+3. Logging and monitoring
+
+### Phase 4: Enhancements (Optional)
+1. Detail page scraping
+2. Image downloading
+3. Duplicate detection improvements
+4. Simple web dashboard
+
+## 🎯 Deployment Options
+
+### Option 1: Local Development
+```bash
+# Simple local run
+python src/main.py --config config/config.yaml
+```
+
+### Option 2: VPS Deployment
+```bash
+# Using systemd service
+sudo systemctl enable homeus
+sudo systemctl start homeus
+```
+
+### Option 3: Docker (Recommended)
+```dockerfile
+FROM python:3.9-slim
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install -r requirements.txt
+COPY . .
+CMD ["python", "src/main.py"]
+```
+
+## 🔧 Key Features
+
+### Smart Scraping
+- **Incremental scraping** - Only new properties trigger detail scraping
+- **Duplicate detection** - Hash-based property comparison
+- **Rate limiting** - Respectful request timing
+- **Error recovery** - Continues on individual failures
+
+### Data Quality
+- **Data validation** - Pydantic models ensure clean data
+- **Price normalization** - Convert currencies and formats
+- **Location standardization** - Clean address formats
+- **Image optimization** - Download and resize images
+
+### Monitoring
+- **Health checks** - Monitor scraping success rates
+- **Performance metrics** - Track scraping speed and efficiency
+- **Error alerting** - Log and optionally notify on failures
+
+This architecture is production-ready, scalable, and focused on reliability over complexity. Would you like me to implement any specific component first?
