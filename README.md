@@ -17,7 +17,7 @@ A production-ready real estate scraper for Georgian property websites (SS.ge and
 ### Option 1: Automated Setup (Recommended)
 
 ```bash
-git clone https://github.com/yourusername/homeus.git
+git clone https://github.com/nmbrthirteen/homeus.git
 cd homeus
 
 # Run setup script
@@ -27,7 +27,7 @@ python setup.py
 ### Option 2: Manual Setup
 
 ```bash
-git clone https://github.com/yourusername/homeus.git
+git clone https://github.com/nmbrthirteen/homeus.git
 cd homeus
 
 # Create virtual environment
@@ -221,8 +221,8 @@ MIT License - see [LICENSE](LICENSE) file for details.
 
 ## 📞 Support
 
-- **Issues**: [GitHub Issues](https://github.com/yourusername/homeus/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/yourusername/homeus/discussions)
+- **Issues**: [GitHub Issues](https://github.com/nmbrthirteen/homeus/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/nmbrthirteen/homeus/discussions)
 
 ## 🎯 Roadmap
 
